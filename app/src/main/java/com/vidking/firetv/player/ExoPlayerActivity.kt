@@ -27,9 +27,11 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import com.vidking.firetv.R
@@ -37,6 +39,8 @@ import com.vidking.firetv.db.AppDatabase
 import com.vidking.firetv.db.WatchProgress
 import com.vidking.firetv.febbox.SubtitleTrack
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 
 /**
  * Native Media3 ExoPlayer playback. Receives a fully-resolved stream URL from
@@ -264,12 +268,20 @@ class ExoPlayerActivity : AppCompatActivity() {
     }
 
     private fun initPlayer() {
-        val httpFactory = DefaultHttpDataSource.Factory()
+        // OkHttp-backed data source. The provider CDNs gate the m3u8 + segment
+        // fetches behind Referer/Origin/User-Agent, and OkHttp gives us
+        // explicit control over redirects and per-request retry, which is
+        // why we prefer it over DefaultHttpDataSource here.
+        val okHttp = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .build()
+
+        val httpFactory = OkHttpDataSource.Factory(okHttp)
             .setUserAgent(userAgent)
-            .setAllowCrossProtocolRedirects(true)
-            .setKeepPostFor302Redirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(20_000)
 
         val headers = mutableMapOf<String, String>()
         if (refererArg.isNotEmpty()) {
@@ -278,8 +290,11 @@ class ExoPlayerActivity : AppCompatActivity() {
         }
         if (headers.isNotEmpty()) httpFactory.setDefaultRequestProperties(headers)
 
+        // Bound retries explicitly. The default policy retries forever on some
+        // 5xx classes which presents to the user as a "stuck loading" loop.
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(httpFactory)
+            .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
 
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
@@ -311,12 +326,29 @@ class ExoPlayerActivity : AppCompatActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                Log.e(TAG, "playback error: ${error.errorCodeName} ${error.message}", error)
-                lastErrorMessage = "${error.errorCodeName}\n${error.message ?: ""}"
+                val httpDetail = describeHttpCause(error)
+                val rootCause = generateSequence<Throwable>(error) { it.cause }
+                    .lastOrNull()
+                    ?.let { "${it.javaClass.simpleName}: ${it.message ?: ""}" }
+                    .orEmpty()
+                Log.e(
+                    TAG,
+                    "playback error: ${error.errorCodeName} ${error.message} | http=$httpDetail | rootCause=$rootCause",
+                    error
+                )
+                lastErrorMessage = buildString {
+                    append("${error.errorCodeName}\n")
+                    append(error.message ?: "")
+                    if (httpDetail.isNotEmpty()) append("\n\n").append(httpDetail)
+                    if (rootCause.isNotEmpty() && error.message?.contains(rootCause) != true) {
+                        append("\n\nCause: ").append(rootCause)
+                    }
+                }
                 showError(
                     "Playback failed (${error.errorCodeName}).\n" +
-                        "${error.message ?: "Unknown error"}\n\n" +
-                        "Long-press OK on remote for diagnostics."
+                        "${error.message ?: "Unknown error"}\n" +
+                        (if (httpDetail.isNotEmpty()) "\n$httpDetail\n" else "") +
+                        "\nLong-press OK on remote for diagnostics."
                 )
             }
 
@@ -409,6 +441,22 @@ class ExoPlayerActivity : AppCompatActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun describeHttpCause(error: PlaybackException): String {
+        // Walk the cause chain and pull out the most actionable HTTP fact:
+        // "HTTP 403 on https://cdn.example/seg-12.ts" beats "Source error".
+        var t: Throwable? = error
+        while (t != null) {
+            when (t) {
+                is HttpDataSource.InvalidResponseCodeException ->
+                    return "HTTP ${t.responseCode} on ${t.dataSpec.uri}"
+                is HttpDataSource.HttpDataSourceException ->
+                    return "Network: ${t.javaClass.simpleName} on ${t.dataSpec.uri}"
+            }
+            t = t.cause
+        }
+        return ""
     }
 
     private fun originOf(referer: String): String {

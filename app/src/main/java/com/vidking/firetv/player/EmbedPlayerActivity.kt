@@ -3,9 +3,11 @@ package com.vidking.firetv.player
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -15,7 +17,12 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
+import android.webkit.JsPromptResult
+import android.webkit.JsResult
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -157,14 +164,26 @@ class EmbedPlayerActivity : AppCompatActivity() {
             loadWithOverviewMode = true
             useWideViewPort = true
             cacheMode = WebSettings.LOAD_DEFAULT
-            allowContentAccess = true
-            allowFileAccess = true
+            // Pop-up hardening for Fire TV. The remote can't dismiss most
+            // browser-style prompts, so suppress them at the source.
+            setSupportMultipleWindows(false)
+            javaScriptCanOpenWindowsAutomatically = false
+            setGeolocationEnabled(false)
+            allowContentAccess = false
+            allowFileAccess = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                safeBrowsingEnabled = true
+            }
             userAgentString = DESKTOP_USER_AGENT
         }
 
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
-            setAcceptThirdPartyCookies(wv, true)
+            setAcceptThirdPartyCookies(wv, false)
+        }
+
+        wv.setDownloadListener { url, _, _, _, _ ->
+            Log.d(TAG, "blocked download attempt: $url")
         }
 
         wv.webChromeClient = object : WebChromeClient() {
@@ -172,8 +191,47 @@ class EmbedPlayerActivity : AppCompatActivity() {
                 Log.d(TAG, "[${provider.name}] ${msg?.message()}")
                 return true
             }
+            override fun onCreateWindow(
+                view: WebView?, isDialog: Boolean,
+                isUserGesture: Boolean, resultMsg: Message?
+            ): Boolean = false
+            override fun onJsAlert(
+                view: WebView?, url: String?, message: String?, result: JsResult?
+            ): Boolean { result?.cancel(); return true }
+            override fun onJsConfirm(
+                view: WebView?, url: String?, message: String?, result: JsResult?
+            ): Boolean { result?.cancel(); return true }
+            override fun onJsPrompt(
+                view: WebView?, url: String?, message: String?,
+                defaultValue: String?, result: JsPromptResult?
+            ): Boolean { result?.cancel(); return true }
+            override fun onJsBeforeUnload(
+                view: WebView?, url: String?, message: String?, result: JsResult?
+            ): Boolean { result?.confirm(); return true }
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean { filePathCallback?.onReceiveValue(null); return false }
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                request?.deny()
+            }
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?, callback: GeolocationPermissions.Callback?
+            ) { callback?.invoke(origin, false, false) }
         }
-        wv.webViewClient = WebViewClient()
+        wv.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?, request: WebResourceRequest?
+            ): Boolean {
+                val scheme = request?.url?.scheme?.lowercase().orEmpty()
+                if (scheme != "http" && scheme != "https" && scheme != "about" && scheme != "data") {
+                    Log.d(TAG, "blocked navigation to non-http url: ${request?.url}")
+                    return true
+                }
+                return false
+            }
+        }
 
         rootView.addView(wv, 0)  // behind the status overlay
         webView = wv

@@ -2,11 +2,18 @@ package com.vidking.firetv.player
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.util.Log
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
+import android.webkit.JsPromptResult
+import android.webkit.JsResult
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -107,6 +114,21 @@ class StreamSniffer(private val context: Context) {
                 return null
             }
 
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                // Block any non-http(s) navigation. Without this, ad scripts
+                // launch the Amazon Appstore / Silk browser via intent: URLs
+                // and the Fire TV remote can't get back into our app.
+                val scheme = request?.url?.scheme?.lowercase().orEmpty()
+                if (scheme != "http" && scheme != "https" && scheme != "about" && scheme != "data") {
+                    Log.d(TAG, "blocked navigation to non-http url: ${request?.url}")
+                    return true
+                }
+                return false
+            }
+
             override fun onReceivedError(
                 view: WebView?,
                 request: WebResourceRequest?,
@@ -115,6 +137,49 @@ class StreamSniffer(private val context: Context) {
                 // Single-resource errors are normal on these embed pages
                 // (ad blockers, dead trackers). Don't bail.
             }
+        }
+
+        // Suppresses every visible / blocking pop-up the embed pages can
+        // generate: window.open, alert/confirm/prompt dialogs, file pickers,
+        // permission requests, geolocation prompts. On Fire TV's D-Pad-only
+        // remote, any of these would freeze the WebView with an un-clickable
+        // dialog and the user would have to force-quit the app.
+        val chromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(
+                view: WebView?, isDialog: Boolean,
+                isUserGesture: Boolean, resultMsg: Message?
+            ): Boolean = false
+
+            override fun onJsAlert(
+                view: WebView?, url: String?, message: String?, result: JsResult?
+            ): Boolean { result?.cancel(); return true }
+
+            override fun onJsConfirm(
+                view: WebView?, url: String?, message: String?, result: JsResult?
+            ): Boolean { result?.cancel(); return true }
+
+            override fun onJsPrompt(
+                view: WebView?, url: String?, message: String?,
+                defaultValue: String?, result: JsPromptResult?
+            ): Boolean { result?.cancel(); return true }
+
+            override fun onJsBeforeUnload(
+                view: WebView?, url: String?, message: String?, result: JsResult?
+            ): Boolean { result?.confirm(); return true }
+
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean { filePathCallback?.onReceiveValue(null); return false }
+
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                request?.deny()
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?, callback: GeolocationPermissions.Callback?
+            ) { callback?.invoke(origin, false, false) }
         }
 
         val wv = WebView(context).apply {
@@ -130,12 +195,30 @@ class StreamSniffer(private val context: Context) {
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
             userAgentString = DESKTOP_USER_AGENT
+            // Pop-up hardening for Fire TV.
+            setSupportMultipleWindows(false)
+            javaScriptCanOpenWindowsAutomatically = false
+            setGeolocationEnabled(false)
+            allowFileAccess = false
+            allowContentAccess = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                safeBrowsingEnabled = true
+            }
         }
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
-            setAcceptThirdPartyCookies(wv, true)
+            // Most embed providers don't need 3rd-party cookies for the
+            // m3u8 fetch to succeed; turning them off avoids tracker
+            // persistence and one class of redirect-driven popunder.
+            setAcceptThirdPartyCookies(wv, false)
+        }
+        // Block any DownloadManager prompt (some embed pages link the m3u8 as
+        // a download to bait users into the system download UI).
+        wv.setDownloadListener { url, _, _, _, _ ->
+            Log.d(TAG, "blocked download attempt: $url")
         }
         wv.webViewClient = client
+        wv.webChromeClient = chromeClient
         webView = wv
         hostView.addView(
             wv,
