@@ -43,4 +43,12 @@
     <string name="settings_livetv_url">IPTV Playlist URL (M3U)</string>
     <string name="settings_livetv_url_hint">Paste an M3U playlist URL from your IPTV provider. Leave blank to use the built-in free channels.</string>
     <string name="settings_livetv_default">Using built-in free channels</string>
+    <string name="settings_sniffer_fallback">WebView sniffer (last-resort fallback)</string>
+    <string name="settings_sniffer_fallback_on">On — load embed providers in a hidden WebView and intercept the stream URL</string>
+    <string name="settings_sniffer_fallback_off">Off — pure-HTTP scrapers only</string>
+    <string name="settings_scraper_vixsrc">Scraper: VixSrc (vixsrc.to)</string>
+    <string name="settings_scraper_vidzee">Scraper: VidZee (player.vidzee.wtf)</string>
+    <string name="settings_scraper_vidsrc">Scraper: VidSrc (vidsrc.xyz family)</string>
+    <string name="settings_toggle_on">On</string>
+    <string name="settings_toggle_off">Off</string>
 </resources>

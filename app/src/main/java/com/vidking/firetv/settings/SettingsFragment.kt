@@ -22,6 +22,7 @@ class SettingsFragment : GuidedStepSupportFragment() {
         val baseUrl = AppPrefs.febboxBaseUrl(ctx)
         val token = AppPrefs.febboxToken(ctx)
         val embedFallback = AppPrefs.embedFallbackEnabled(ctx)
+        val snifferFallback = AppPrefs.snifferFallbackEnabled(ctx)
         val livetvUrl = AppPrefs.livetvPlaylistUrl(ctx)
 
         actions.add(
@@ -43,6 +44,37 @@ class SettingsFragment : GuidedStepSupportFragment() {
                 .id(ACTION_TOKEN)
                 .title(getString(R.string.settings_febbox_token))
                 .description(maskToken(token))
+                .build()
+        )
+        actions.add(
+            GuidedAction.Builder(ctx)
+                .id(ACTION_SCRAPER_VIXSRC)
+                .title(getString(R.string.settings_scraper_vixsrc))
+                .description(toggleDescription(AppPrefs.scraperEnabled(ctx, "vixsrc")))
+                .build()
+        )
+        actions.add(
+            GuidedAction.Builder(ctx)
+                .id(ACTION_SCRAPER_VIDZEE)
+                .title(getString(R.string.settings_scraper_vidzee))
+                .description(toggleDescription(AppPrefs.scraperEnabled(ctx, "vidzee")))
+                .build()
+        )
+        actions.add(
+            GuidedAction.Builder(ctx)
+                .id(ACTION_SCRAPER_VIDSRC)
+                .title(getString(R.string.settings_scraper_vidsrc))
+                .description(toggleDescription(AppPrefs.scraperEnabled(ctx, "vidsrc")))
+                .build()
+        )
+        actions.add(
+            GuidedAction.Builder(ctx)
+                .id(ACTION_SNIFFER_FALLBACK)
+                .title(getString(R.string.settings_sniffer_fallback))
+                .description(
+                    if (snifferFallback) getString(R.string.settings_sniffer_fallback_on)
+                    else getString(R.string.settings_sniffer_fallback_off)
+                )
                 .build()
         )
         actions.add(
@@ -77,6 +109,7 @@ class SettingsFragment : GuidedStepSupportFragment() {
         val baseUrl = AppPrefs.febboxBaseUrl(ctx)
         val token = AppPrefs.febboxToken(ctx)
         val embedFallback = AppPrefs.embedFallbackEnabled(ctx)
+        val snifferFallback = AppPrefs.snifferFallbackEnabled(ctx)
         val livetvUrl = AppPrefs.livetvPlaylistUrl(ctx)
         findActionById(ACTION_LIVETV_URL)?.let {
             it.description = if (livetvUrl.isEmpty()) getString(R.string.settings_livetv_default) else livetvUrl
@@ -89,6 +122,24 @@ class SettingsFragment : GuidedStepSupportFragment() {
         findActionById(ACTION_TOKEN)?.let {
             it.description = maskToken(token)
             notifyActionChanged(findActionPositionById(ACTION_TOKEN))
+        }
+        findActionById(ACTION_SCRAPER_VIXSRC)?.let {
+            it.description = toggleDescription(AppPrefs.scraperEnabled(ctx, "vixsrc"))
+            notifyActionChanged(findActionPositionById(ACTION_SCRAPER_VIXSRC))
+        }
+        findActionById(ACTION_SCRAPER_VIDZEE)?.let {
+            it.description = toggleDescription(AppPrefs.scraperEnabled(ctx, "vidzee"))
+            notifyActionChanged(findActionPositionById(ACTION_SCRAPER_VIDZEE))
+        }
+        findActionById(ACTION_SCRAPER_VIDSRC)?.let {
+            it.description = toggleDescription(AppPrefs.scraperEnabled(ctx, "vidsrc"))
+            notifyActionChanged(findActionPositionById(ACTION_SCRAPER_VIDSRC))
+        }
+        findActionById(ACTION_SNIFFER_FALLBACK)?.let {
+            it.description =
+                if (snifferFallback) getString(R.string.settings_sniffer_fallback_on)
+                else getString(R.string.settings_sniffer_fallback_off)
+            notifyActionChanged(findActionPositionById(ACTION_SNIFFER_FALLBACK))
         }
         findActionById(ACTION_EMBED_FALLBACK)?.let {
             it.description =
@@ -132,6 +183,14 @@ class SettingsFragment : GuidedStepSupportFragment() {
                 AppPrefs.setEmbedFallbackEnabled(ctx, !AppPrefs.embedFallbackEnabled(ctx))
                 onResume()
             }
+            ACTION_SNIFFER_FALLBACK -> {
+                val ctx = requireContext()
+                AppPrefs.setSnifferFallbackEnabled(ctx, !AppPrefs.snifferFallbackEnabled(ctx))
+                onResume()
+            }
+            ACTION_SCRAPER_VIXSRC -> toggleScraper("vixsrc")
+            ACTION_SCRAPER_VIDZEE -> toggleScraper("vidzee")
+            ACTION_SCRAPER_VIDSRC -> toggleScraper("vidsrc")
             ACTION_CLEAR -> {
                 val ctx = requireContext()
                 AppPrefs.setFebboxBaseUrl(ctx, "")
@@ -148,6 +207,15 @@ class SettingsFragment : GuidedStepSupportFragment() {
         return token.substring(0, 3) + "•".repeat(token.length - 6) + token.substring(token.length - 3)
     }
 
+    private fun toggleDescription(enabled: Boolean): String =
+        if (enabled) getString(R.string.settings_toggle_on) else getString(R.string.settings_toggle_off)
+
+    private fun toggleScraper(id: String) {
+        val ctx = requireContext()
+        AppPrefs.setScraperEnabled(ctx, id, !AppPrefs.scraperEnabled(ctx, id))
+        onResume()
+    }
+
     companion object {
         private const val ACTION_LIVETV_URL = 0L
         private const val ACTION_BASE_URL = 1L
@@ -155,5 +223,9 @@ class SettingsFragment : GuidedStepSupportFragment() {
         private const val ACTION_EMBED_FALLBACK = 3L
         private const val ACTION_CLEAR = 4L
         private const val ACTION_DONE = 5L
+        private const val ACTION_SNIFFER_FALLBACK = 6L
+        private const val ACTION_SCRAPER_VIXSRC = 7L
+        private const val ACTION_SCRAPER_VIDZEE = 8L
+        private const val ACTION_SCRAPER_VIDSRC = 9L
     }
 }
