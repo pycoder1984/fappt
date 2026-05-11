@@ -13,45 +13,46 @@ import retrofit2.converter.moshi.MoshiConverterFactory
 import java.util.concurrent.TimeUnit
 
 /**
- * Thin wrapper around FebboxApi. The base URL is user-supplied (Settings), so
- * the Retrofit instance is rebuilt whenever the URL changes. Returns
- * Result.failure on any error — StreamResolver falls through to the WebView
- * sniffer in that case, so the app still plays content when the API is down.
+ * Calls the rnrvibe `/api/siteadmin/febbox` route. One POST per resolution.
+ * The `febbox_base_url` pref is the full endpoint URL and `febbox_token` is
+ * the siteadmin cookie value.
+ *
+ * Returns the full quality ladder (`qualities[]`) — the SourcePicker uses it
+ * to prompt the user for 4K / 1080p / 720p / 360p / AUTO. Audio-only variants
+ * are kept but flagged so the quality picker hides them.
+ *
+ * No subtitles or intro markers (the route doesn't return them); those come
+ * from OpenSubtitles instead.
  */
 object FebboxRepository {
 
     private const val TAG = "FebboxRepository"
+    private const val SITEADMIN_COOKIE = "rnrvibe_siteadmin"
+    private const val FEBBOX_REFERER = "https://www.febbox.com/"
     private const val DESKTOP_USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-    @Volatile private var cachedBaseUrl: String? = null
-    @Volatile private var cachedApi: FebboxApi? = null
+    private const val DUMMY_BASE_URL = "https://www.rnrvibe.com/"
 
-    private fun apiFor(baseUrl: String): FebboxApi {
-        cachedApi?.let { if (cachedBaseUrl == baseUrl) return it }
-
+    private val api: FebboxApi by lazy {
         val client = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
             .addInterceptor(HttpLoggingInterceptor().apply {
-                level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
+                level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY
                 else HttpLoggingInterceptor.Level.NONE
             })
             .build()
 
         val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
 
-        val api = Retrofit.Builder()
-            .baseUrl(if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/")
+        Retrofit.Builder()
+            .baseUrl(DUMMY_BASE_URL)
             .client(client)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
             .create(FebboxApi::class.java)
-
-        cachedBaseUrl = baseUrl
-        cachedApi = api
-        return api
     }
 
     suspend fun resolve(
@@ -61,56 +62,69 @@ object FebboxRepository {
         season: Int,
         episode: Int
     ): Result<ResolvedStream> {
-        val baseUrl = AppPrefs.febboxBaseUrl(context)
+        val endpoint = AppPrefs.febboxBaseUrl(context)
         val token = AppPrefs.febboxToken(context)
-        if (baseUrl.isEmpty() || token.isEmpty()) {
-            return Result.failure(IllegalStateException("Febbox base URL or token not configured"))
+        if (endpoint.isEmpty() || token.isEmpty()) {
+            return Result.failure(IllegalStateException("Febbox endpoint or token not configured"))
         }
 
+        val isTv = mediaType == "tv"
+        val body = FebboxResolveRequest(
+            type = if (isTv) "tv" else "movie",
+            tmdbId = tmdbId.toString(),
+            season = if (isTv) season else null,
+            episode = if (isTv) episode else null
+        )
+
         return try {
-            val api = apiFor(baseUrl)
-            val cookie = "ui=$token"
-            val response = if (mediaType == "tv") {
-                api.resolveEpisode(tmdbId, season, episode, token, cookie)
-            } else {
-                api.resolveMovie(tmdbId, token, cookie)
-            }
+            val response = api.resolve(
+                url = endpoint,
+                cookie = "$SITEADMIN_COOKIE=$token",
+                body = body
+            )
 
-            val sources = response.sources?.filter { !it.url.isNullOrBlank() }.orEmpty()
-            if (sources.isEmpty()) {
-                return Result.failure(IllegalStateException("Febbox returned no sources"))
-            }
-
-            val best = sources.maxByOrNull { it.qualityRank() } ?: sources.first()
-            val streamUrl = best.url!!
-
-            val subs = response.subtitles
-                ?.filter { !it.url.isNullOrBlank() }
-                ?.map { sub ->
-                    SubtitleTrack(
-                        url = sub.url!!,
-                        label = sub.bestLabel(),
-                        language = sub.bestLang(),
-                        mimeType = SubtitleTrack.mimeFromUrlOrFormat(sub.url, sub.format)
+            // Prefer the full qualities ladder when present. Falls back to the
+            // top-level url if the response is unexpectedly stripped down.
+            val ladder = response.qualities
+                ?.mapNotNull { q ->
+                    val url = q.url?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    val quality = q.quality?.trim().orEmpty()
+                    StreamVariant(
+                        url = url,
+                        quality = quality.ifEmpty { "AUTO" },
+                        codec = q.codec.orEmpty(),
+                        isAudioOnly = quality.startsWith("audio", ignoreCase = true)
                     )
                 }
                 .orEmpty()
 
-            val introStartMs = response.intro?.start?.let { (it * 1000).toLong() } ?: -1L
-            val introEndMs = response.intro?.end?.let { (it * 1000).toLong() } ?: -1L
+            val variants = if (ladder.isNotEmpty()) {
+                ladder.sortedByDescending { it.qualityRank() }
+            } else {
+                val url = response.url
+                if (url.isNullOrBlank()) {
+                    val why = response.error ?: "no url in response"
+                    return Result.failure(IllegalStateException("Febbox: $why"))
+                }
+                listOf(
+                    StreamVariant(
+                        url = url,
+                        quality = response.quality?.ifBlank { "AUTO" } ?: "AUTO",
+                        codec = response.codec.orEmpty()
+                    )
+                )
+            }
 
-            val referer = response.referer?.takeIf { it.isNotBlank() }
-                ?: baseUrl.trimEnd('/') + "/"
-
-            Log.d(TAG, "resolved ${best.quality ?: "unknown"} from $baseUrl, ${subs.size} subs")
+            Log.d(
+                TAG,
+                "resolved ${variants.size} variants from $endpoint (video=${variants.count { !it.isAudioOnly }})"
+            )
             Result.success(
                 ResolvedStream(
-                    url = streamUrl,
-                    referer = referer,
+                    variants = variants,
+                    referer = FEBBOX_REFERER,
                     userAgent = DESKTOP_USER_AGENT,
-                    subtitles = subs,
-                    introStartMs = introStartMs,
-                    introEndMs = introEndMs
+                    subtitles = emptyList()
                 )
             )
         } catch (t: Throwable) {

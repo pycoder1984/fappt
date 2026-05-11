@@ -8,94 +8,94 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build debug APK
 ./gradlew assembleDebug
 
-# Build release APK
-./gradlew assembleRelease
-
 # Deploy to Fire TV or emulator over ADB
 adb connect FIRE_TV_IP:5555          # physical device
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 # Emulator (AVD name: firetv_avd, SDK path: C:\Users\obaid\dev-tools\android-sdk)
 C:\Users\obaid\dev-tools\android-sdk\emulator\emulator.exe -avd firetv_avd -no-audio
-C:\Users\obaid\dev-tools\android-sdk\platform-tools\adb.exe install -r app-debug.apk
 ```
 
-No automated tests exist. Verification is manual: sideload and test on device/emulator. CI builds on every push to `main` and publishes `vidking-firetv.apk` to the `latest` GitHub release via `.github/workflows/build.yml`.
+No automated tests. Verification is manual: sideload and try a title. CI in `.github/workflows/build.yml` builds on every push to `main` and publishes `vidking-firetv.apk` to the `latest` GitHub release.
 
 ## Architecture Overview
 
-Native Android TV / Fire TV app (Leanback UI) that browses TMDB, streams on-demand content via native Media3 ExoPlayer, and includes a Live TV row powered by M3U/IPTV playlists. WebView on Fire TV cannot access hardware decoders for HLS/DASH; the app solves this by sniffing stream URLs out of embed pages and handing them to ExoPlayer.
+Native Android TV / Fire TV app (Leanback UI) that browses TMDB, lets the user explicitly pick a stream source for each title, and plays the resolved HLS/MP4 through Media3 ExoPlayer. English subtitles come from OpenSubtitles (sidecar tracks attached to the MediaItem at prepare time).
 
-### Stream Resolution Pipeline (On-Demand)
+The app is **stateless across launches** — no watch history, no resume, no Room DB. The `data/` package is just a thin SharedPreferences wrapper for the Febbox endpoint + token + crash payload.
 
-`PlaybackLauncherActivity` shows a "Resolving…" screen while `StreamResolver` works through two stages:
+### Stream Sources
 
-1. **Febbox bridge** (optional, user-configured): HTTP API call via `FebboxRepository` → returns `ResolvedStream` with URL, referer, subtitle tracks, and intro markers.
-2. **WebView sniffer** (fallback): `StreamSniffer` loads each provider's embed URL in a full-screen invisible WebView and intercepts `shouldInterceptRequest` for `.m3u8`, `.mpd`, or `.mp4` requests. Times out at 25 s per provider. `StreamProviders.ALL` holds the ordered list of 5 embed providers (VidSrc.to, MoviesAPI, VidLink, VidSrc.me, 2Embed.skin).
+The user picks one of the following per playback:
 
-On success → `ExoPlayerActivity`. On total failure with embed fallback enabled → `EmbedPlayerActivity` (full-screen WebView iframe, last resort).
+1. **Febbox** (only listed if configured in Settings) — one POST to a Vercel route that wraps the Showbox→Febbox chain. Returns the full HLS quality ladder (4K / 1080p / 720p / 360p / AUTO plus a few audio-only variants). See `febbox/FebboxRepository.kt`.
+2. **WebView sniffer providers** — VidSrc.to, MoviesAPI, VidLink, VidSrc.me, 2Embed.skin, Aether. Each loads its embed page in a hidden full-screen WebView; `StreamSniffer.shouldInterceptRequest` grabs the first `.m3u8` / `.mpd` / `.mp4` request. 25 s timeout per provider. No quality picker (the master playlist's variant selection happens later inside ExoPlayer).
 
-**Key sniffer constraint:** `shouldInterceptRequest` runs on a background thread — never call `WebView.getSettings()` or any other WebView method inside it. The sniffer's host `FrameLayout` must be MATCH_PARENT (not 1×1) so anti-bot viewport checks pass.
-
-### Live TV Pipeline
-
-Live channels bypass the sniffer entirely — the stream URL is already known from the M3U playlist. Tapping a channel goes directly to `ExoPlayerActivity`. `tmdbId = -1` and `mediaType = "live"` are passed; progress saving bails early because live streams have no finite duration.
-
-### Data Flow
+### Playback Pipeline
 
 ```
-MainBrowseFragment (Continue Watching, Trending, Popular Movies, Popular TV, Live TV, Settings)
-  ↓ tap MediaItem / WatchProgress
-DetailsFragment (metadata, Play / Resume / Browse Episodes actions, season rows)
-  ↓ Play / episode tap
-PlaybackLauncherActivity → StreamResolver
-  ├─ FebboxRepository (if configured)
-  └─ StreamSniffer × StreamProviders.ALL → WyzieRepository (subtitles)
-       ↓
-ExoPlayerActivity (Media3, MediaSession, Room progress)
-  or EmbedPlayerActivity (WebView fallback)
-
-  ↓ tap Channel (Live TV row)
-ExoPlayerActivity directly (no resolver, direct HLS URL)
+DetailsFragment (TMDB metadata, Play / Browse Episodes actions)
+  ↓ tap Play / episode
+SourcePickerActivity (source list)
+  ↓ pick provider
+   ├─ Febbox path:    FebboxRepository.resolve → ResolvedStream (full ladder)
+   │                  → QUALITY_LIST step → user picks variant
+   └─ Sniffer path:   StreamSniffer.sniff(embedUrl) → ResolvedStream (single variant)
+  ↓ subtitles fetched in parallel via OpenSubtitlesRepository
+ExoPlayerActivity (Media3 SurfaceView, MediaSession, OpenSubtitles sidecar)
 ```
 
 ### Key Layers
 
 | Layer | Files | Notes |
 |---|---|---|
-| Browse UI | `browse/MainBrowseFragment.kt` | Rows: Continue, Trending, Movies, TV, Live TV, Settings |
-| Details UI | `details/DetailsFragment.kt` | Metadata + parallel season/episode loading |
+| Browse UI | `browse/MainBrowseFragment.kt` | Rows: Trending, Popular Movies, Popular TV, Settings |
+| Details UI | `details/DetailsFragment.kt` | TMDB metadata + parallel season/episode loading |
 | Search | `search/SearchFragment.kt` | TMDB search with 300 ms debounce |
-| Settings | `settings/SettingsFragment.kt`, `TextEntryStepFragment.kt` | Febbox config + IPTV URL |
-| Stream resolution | `player/StreamResolver.kt`, `StreamSniffer.kt`, `StreamProviders.kt` | VOD pipeline |
-| Native playback | `player/ExoPlayerActivity.kt` | SurfaceView, MediaSession, skip-intro, debug overlay |
-| Embed fallback | `player/EmbedPlayerActivity.kt` | WebView iframe, last resort |
-| Live TV | `livetv/Channel.kt`, `LiveTvRepository.kt`, `M3uParser.kt` | M3U parser + 10 built-in free channels |
-| TMDB API | `tmdb/Tmdb.kt`, `TmdbApi.kt`, `TmdbModels.kt` | Retrofit singleton |
-| Febbox bridge | `febbox/FebboxRepository.kt`, `FebboxApi.kt`, `ResolvedStream.kt` | Optional self-hosted proxy |
-| Subtitles fallback | `wyzie/WyzieRepository.kt` | Best-effort, silent fail |
-| Watch progress | `db/AppDatabase.kt`, `WatchProgress.kt`, `WatchProgressDao.kt` | Room, saved every 10 s |
-| Preferences | `data/AppPrefs.kt` | Febbox URL/token, embed fallback flag, IPTV URL, crash payload |
+| Settings | `settings/SettingsFragment.kt`, `TextEntryStepFragment.kt` | Febbox endpoint URL + auth token |
+| Source picker | `player/SourcePickerActivity.kt` | Stage machine: SOURCE_LIST → RESOLVING → QUALITY_LIST → ExoPlayer |
+| Embed providers | `player/StreamProviders.kt` | 6 embed URLs (VidSrc.to, MoviesAPI, VidLink, VidSrc.me, 2Embed.skin, Aether) |
+| WebView sniffer | `player/StreamSniffer.kt` | Hidden-WebView m3u8/mp4 interceptor |
+| Native playback | `player/ExoPlayerActivity.kt` | Media3, MediaSession, subtitle toggle, debug overlay |
+| TMDB API | `tmdb/Tmdb.kt`, `TmdbApi.kt`, `TmdbModels.kt` | Retrofit + Moshi |
+| Febbox client | `febbox/FebboxApi.kt`, `FebboxRepository.kt`, `FebboxModels.kt`, `ResolvedStream.kt` | POST JSON, parses qualities ladder |
+| OpenSubtitles | `opensubtitles/OpenSubtitlesApi.kt`, `OpenSubtitlesRepository.kt`, `OpenSubtitlesModels.kt` | Anonymous search + download |
+| Preferences | `data/AppPrefs.kt` | Febbox URL/token + crash payload only |
 
-### DetailsFragment — Season/Episode Picker
+### Febbox Endpoint (current deployment)
 
-All seasons load in parallel via `async`/`awaitAll` inside `supervisorScope`. Each season becomes a `ListRow` added to `rowsAdapter` after all fetches complete. The "Browse Episodes ↓" action button scrolls to position 1 (first season row). Failures per season are logged but don't block others.
+POST `https://www.rnrvibe.com/api/siteadmin/febbox` with:
+- Header `Cookie: rnrvibe_siteadmin=<SITEADMIN_TOKEN from lib/siteadmin.ts>`
+- Body `{ "type": "movie"|"tv", "tmdbId": "<id>", "season"?, "episode"? }`
+
+Returns `{ url, quality, codec, fid, mime, qualities: [{url, quality, codec, format}, ...] }`.
+
+The upstream Febbox `ui` cookie that powers the route is set as `FEBBOX_UI_COOKIE` env var on Vercel (server-side only, never shipped to the app).
+
+### OpenSubtitles
+
+Base URL `https://api.opensubtitles.com/api/v1/`. Two calls per playback:
+
+1. `GET /subtitles?tmdb_id=X[&parent_tmdb_id=X&season_number=N&episode_number=N]&languages=en` — sorted by `download_count desc`.
+2. `POST /download` with `{ file_id }` — returns a temporary direct URL for the SRT/VTT.
+
+Required headers: `Api-Key` (build-config) and a **custom User-Agent** (`Vidking FireTV v1.0`) — generic UAs get rate-limited. Anonymous quota is 5 downloads / IP / 24 h; to raise it, log in via `/login` for a JWT and pass `Authorization: Bearer <jwt>` (not wired up).
+
+Subtitle fetch is best-effort — failures (network, no match, quota) return an empty list and playback proceeds without subs.
 
 ### ExoPlayerActivity Details
 
-- Hardware SurfaceView playback with Media3
-- MediaSession for Fire TV Now Playing card and hardware remote key handling
-- Saves `WatchProgress` to Room every 10 s (skipped for live: duration is unset)
-- Shows skip-intro button if `ResolvedStream.introMarkers` is set
+- Hardware SurfaceView playback via Media3 1.4.1
+- MediaSession for Fire TV Now Playing card and hardware media keys
+- Stateless: no watch history, no resume seek
+- Subtitle controls: **Menu (≡)** key on Fire TV remote (also `CAPTIONS`) toggles all text tracks via `setTrackTypeDisabled(C.TRACK_TYPE_TEXT, ...)`. Style: white text on 50%-opaque black background, `setApplyEmbeddedStyles(false)` so source-defined styling can't override
 - Long-press OK on remote → debug overlay (codec, bitrate, last error)
-- Picture-in-picture declared in manifest
 
 ### Configuration
 
-- TMDB API key is a `buildConfigField` in `app/build.gradle.kts`
+- TMDB API key: `buildConfigField TMDB_API_KEY` in `app/build.gradle.kts`
+- OpenSubtitles API key: `buildConfigField OPENSUBTITLES_API_KEY` in `app/build.gradle.kts`
 - Febbox base URL and token: user-entered via Settings → stored in `AppPrefs`
-- IPTV Playlist URL: user-entered M3U URL; when blank, `LiveTvRepository.BUILTIN_CHANNELS` is used
-- Embed fallback toggle defaults to `true`
 
 ### Fire TV–Specific Constraints
 
@@ -103,3 +103,12 @@ All seasons load in parallel via `async`/`awaitAll` inside `supervisorScope`. Ea
 - App is landscape-only
 - WebView on Fire TV cannot use hardware decoders for HLS → reason for the sniffer + ExoPlayer approach
 - `shouldInterceptRequest` is called on a background thread — never call WebView methods there
+- The sniffer's host `FrameLayout` must be MATCH_PARENT (not 1×1) so anti-bot viewport checks pass
+
+## Released APK
+
+The `.github/workflows/build.yml` workflow builds and publishes `vidking-firetv.apk` to the `latest` GitHub release on every push to `main`. Direct download URL:
+
+```
+https://github.com/pycoder1984/ftv/releases/latest/download/vidking-firetv.apk
+```

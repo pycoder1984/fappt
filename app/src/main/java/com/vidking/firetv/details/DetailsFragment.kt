@@ -1,8 +1,6 @@
 package com.vidking.firetv.details
 
-import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.Bundle
 import androidx.core.content.ContextCompat
@@ -22,20 +20,15 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
 import com.vidking.firetv.R
-import com.vidking.firetv.db.AppDatabase
-import com.vidking.firetv.db.WatchProgress
-import com.vidking.firetv.player.PlaybackLauncherActivity
-import com.vidking.firetv.presenters.CardPresenter
+import com.vidking.firetv.player.SourcePickerActivity
 import com.vidking.firetv.tmdb.Episode
 import com.vidking.firetv.tmdb.MovieDetails
 import com.vidking.firetv.tmdb.Tmdb
 import com.vidking.firetv.tmdb.TvDetails
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
-import kotlinx.coroutines.withContext
 
 class DetailsFragment : DetailsSupportFragment() {
 
@@ -47,10 +40,6 @@ class DetailsFragment : DetailsSupportFragment() {
     private var titleText: String = ""
     private var posterPath: String? = null
     private var backdropPath: String? = null
-    private var tvDetails: TvDetails? = null
-    private var resumeSeconds: Long = 0L
-    private var resumeSeason: Int = 1
-    private var resumeEpisode: Int = 1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,9 +52,8 @@ class DetailsFragment : DetailsSupportFragment() {
         detailsPresenter.actionsBackgroundColor = ContextCompat.getColor(requireContext(), R.color.background_card)
         detailsPresenter.onActionClickedListener = OnActionClickedListener { action ->
             when (action.id) {
-                ACTION_PLAY -> launchPlayer(resumeSeconds = 0L, season = 1, episode = 1)
-                ACTION_RESUME -> launchPlayer(resumeSeconds = resumeSeconds, season = resumeSeason, episode = resumeEpisode)
-                ACTION_EPISODES -> setSelectedPosition(1)  // scroll to first season row
+                ACTION_PLAY -> launchPicker(season = 1, episode = 1)
+                ACTION_EPISODES -> setSelectedPosition(1)
             }
         }
         presenterSelector.addClassPresenter(DetailsOverviewRow::class.java, detailsPresenter)
@@ -79,64 +67,35 @@ class DetailsFragment : DetailsSupportFragment() {
 
         onItemViewClickedListener = OnItemViewClickedListener { _, item, _, _ ->
             if (item is Episode) {
-                launchPlayer(resumeSeconds = 0L, season = item.seasonNumber, episode = item.episodeNumber)
+                launchPicker(season = item.seasonNumber, episode = item.episodeNumber)
             }
         }
 
         loadDetails()
     }
 
-    private fun launchPlayer(resumeSeconds: Long, season: Int, episode: Int) {
-        val intent = PlaybackLauncherActivity.intent(
-            requireContext(),
+    private fun launchPicker(season: Int, episode: Int) {
+        val intent = SourcePickerActivity.intent(
+            context = requireContext(),
             tmdbId = tmdbId,
             mediaType = mediaType,
             title = titleText,
             posterPath = posterPath,
             backdropPath = backdropPath,
             season = if (mediaType == "tv") season else 0,
-            episode = if (mediaType == "tv") episode else 0,
-            resumeSeconds = resumeSeconds
+            episode = if (mediaType == "tv") episode else 0
         )
         startActivity(intent)
     }
 
-    override fun onResume() {
-        super.onResume()
-        refreshResumeAction()
-    }
-
-    private fun refreshResumeAction() {
-        lifecycleScope.launch {
-            val dao = AppDatabase.get(requireContext()).watchProgressDao()
-            val record: WatchProgress? = withContext(Dispatchers.IO) {
-                if (mediaType == "movie") dao.get(WatchProgress.keyFor(tmdbId, "movie"))
-                else null
-            }
-
-            detailActions.clear()
-            if (mediaType == "movie") {
-                if (record != null && !record.finished && record.currentTime > 30) {
-                    resumeSeconds = record.currentTime.toLong()
-                    detailActions.add(
-                        Action(ACTION_RESUME, getString(R.string.action_resume),
-                            formatTime(record.currentTime))
-                    )
-                }
-                detailActions.add(Action(ACTION_PLAY, getString(R.string.action_play)))
-            } else {
-                detailActions.add(Action(ACTION_PLAY, getString(R.string.action_play), "S1E1"))
-                detailActions.add(Action(ACTION_EPISODES, getString(R.string.action_episodes)))
-            }
+    private fun populateActions() {
+        detailActions.clear()
+        if (mediaType == "movie") {
+            detailActions.add(Action(ACTION_PLAY, getString(R.string.action_play)))
+        } else {
+            detailActions.add(Action(ACTION_PLAY, getString(R.string.action_play), "S1E1"))
+            detailActions.add(Action(ACTION_EPISODES, getString(R.string.action_episodes)))
         }
-    }
-
-    private fun formatTime(seconds: Double): String {
-        val s = seconds.toLong()
-        val m = s / 60
-        val h = m / 60
-        return if (h > 0) String.format("%d:%02d:%02d", h, m % 60, s % 60)
-        else String.format("%d:%02d", m, s % 60)
     }
 
     private fun loadDetails() {
@@ -147,7 +106,6 @@ class DetailsFragment : DetailsSupportFragment() {
                     bindMovie(d)
                 } else {
                     val d = Tmdb.api.tvDetails(tmdbId, Tmdb.API_KEY)
-                    tvDetails = d
                     bindTv(d)
                     loadSeasons(d)
                 }
@@ -171,7 +129,7 @@ class DetailsFragment : DetailsSupportFragment() {
         detailsRow.item = info
         loadPoster(Tmdb.posterUrl(d.posterPath))
         rowsAdapter.notifyArrayItemRangeChanged(0, 1)
-        refreshResumeAction()
+        populateActions()
     }
 
     private fun bindTv(d: TvDetails) {
@@ -190,6 +148,7 @@ class DetailsFragment : DetailsSupportFragment() {
         detailsRow.item = info
         loadPoster(Tmdb.posterUrl(d.posterPath))
         rowsAdapter.notifyArrayItemRangeChanged(0, 1)
+        populateActions()
     }
 
     private fun loadPoster(url: String?) {
@@ -209,8 +168,6 @@ class DetailsFragment : DetailsSupportFragment() {
         if (seasons.isEmpty()) return
         lifecycleScope.launch {
             supervisorScope {
-                // Fetch all seasons in parallel; failures for individual seasons are logged
-                // but don't prevent the rest from appearing.
                 seasons
                     .map { season ->
                         async {
@@ -242,7 +199,6 @@ class DetailsFragment : DetailsSupportFragment() {
 
     companion object {
         const val ACTION_PLAY = 1L
-        const val ACTION_RESUME = 2L
         const val ACTION_EPISODES = 3L
     }
 }

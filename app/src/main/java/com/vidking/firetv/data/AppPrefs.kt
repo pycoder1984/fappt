@@ -4,10 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 
 /**
- * Single SharedPreferences-backed store for user settings (Febbox token, base URL,
- * future preferences) and crash diagnostics. Wraps a private prefs file named
- * "vidking_prefs". All reads/writes are synchronous; callers should not invoke
- * from the UI critical path during scrolling.
+ * SharedPreferences-backed store for user settings (Febbox endpoint + token)
+ * and crash diagnostics. Source/quality selection is now explicit through the
+ * SourcePicker UI, so the old auto-fallback toggles are gone.
  */
 object AppPrefs {
 
@@ -15,10 +14,6 @@ object AppPrefs {
 
     private const val KEY_FEBBOX_BASE_URL = "febbox_base_url"
     private const val KEY_FEBBOX_TOKEN = "febbox_token"
-    private const val KEY_EMBED_FALLBACK = "embed_fallback_enabled"
-    private const val KEY_SNIFFER_FALLBACK = "sniffer_fallback_enabled"
-    private const val KEY_SCRAPER_ENABLED_PREFIX = "scraper_enabled_"
-    private const val KEY_LIVETV_URL = "livetv_playlist_url"
     private const val KEY_LAST_CRASH = "last_crash"
     private const val KEY_LAST_CRASH_AT = "last_crash_at"
 
@@ -40,53 +35,8 @@ object AppPrefs {
         prefs(context).edit().putString(KEY_FEBBOX_TOKEN, value.trim()).apply()
     }
 
-    fun livetvPlaylistUrl(context: Context): String =
-        prefs(context).getString(KEY_LIVETV_URL, "").orEmpty().trim()
-
-    fun setLivetvPlaylistUrl(context: Context, value: String) {
-        prefs(context).edit().putString(KEY_LIVETV_URL, value.trim()).apply()
-    }
-
     fun hasFebboxConfig(context: Context): Boolean =
         febboxBaseUrl(context).isNotEmpty() && febboxToken(context).isNotEmpty()
-
-    /**
-     * If true (default), [PlaybackLauncherActivity] falls through to
-     * [EmbedPlayerActivity] when stream resolution fails. If false, the
-     * launcher shows an error screen instead. Disable to keep playback
-     * strictly native (recommended on Fire TV when ExoPlayer is reliable).
-     */
-    fun embedFallbackEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_EMBED_FALLBACK, true)
-
-    fun setEmbedFallbackEnabled(context: Context, enabled: Boolean) {
-        prefs(context).edit().putBoolean(KEY_EMBED_FALLBACK, enabled).apply()
-    }
-
-    /**
-     * If true (default), [StreamResolver] falls through from the in-app HTTP
-     * scrapers to the WebView sniffer when the scrapers all fail. Disable to
-     * keep playback strictly pure-HTTP.
-     */
-    fun snifferFallbackEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_SNIFFER_FALLBACK, true)
-
-    fun setSnifferFallbackEnabled(context: Context, enabled: Boolean) {
-        prefs(context).edit().putBoolean(KEY_SNIFFER_FALLBACK, enabled).apply()
-    }
-
-    /**
-     * Per-scraper enable toggle (default true). Lets the user disable a
-     * scraper that's broken without rebuilding the APK.
-     */
-    fun scraperEnabled(context: Context, scraperId: String): Boolean =
-        prefs(context).getBoolean(KEY_SCRAPER_ENABLED_PREFIX + scraperId, true)
-
-    fun setScraperEnabled(context: Context, scraperId: String, enabled: Boolean) {
-        prefs(context).edit()
-            .putBoolean(KEY_SCRAPER_ENABLED_PREFIX + scraperId, enabled)
-            .apply()
-    }
 
     fun lastCrash(context: Context): String? =
         prefs(context).getString(KEY_LAST_CRASH, null)

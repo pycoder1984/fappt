@@ -9,8 +9,6 @@ import androidx.leanback.widget.Presenter
 import com.bumptech.glide.Glide
 import com.vidking.firetv.R
 import com.vidking.firetv.browse.SettingsCardItem
-import com.vidking.firetv.db.WatchProgress
-import com.vidking.firetv.livetv.Channel
 import com.vidking.firetv.tmdb.MediaItem
 import com.vidking.firetv.tmdb.Tmdb
 
@@ -47,31 +45,6 @@ class CardPresenter : Presenter() {
                     .placeholder(defaultBg)
                     .centerCrop()
                     .into(card.mainImageView)
-            }
-            is WatchProgress -> {
-                card.titleText = item.title
-                val pct = (item.progressPct * 100).toInt().coerceIn(0, 100)
-                card.contentText = if (item.mediaType == "tv")
-                    "S${item.season}E${item.episode} • $pct%"
-                else "Movie • $pct%"
-                Glide.with(card.context)
-                    .load(Tmdb.posterUrl(item.posterPath))
-                    .placeholder(defaultBg)
-                    .centerCrop()
-                    .into(card.mainImageView)
-            }
-            is Channel -> {
-                card.titleText = item.name
-                card.contentText = item.group ?: "Live TV"
-                if (item.logoUrl != null) {
-                    Glide.with(card.context)
-                        .load(item.logoUrl)
-                        .placeholder(defaultBg)
-                        .centerCrop()
-                        .into(card.mainImageView)
-                } else {
-                    card.mainImage = defaultBg
-                }
             }
             is SettingsCardItem -> {
                 card.titleText = item.title

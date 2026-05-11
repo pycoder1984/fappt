@@ -14,13 +14,13 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
-import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
@@ -34,34 +34,24 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
-import com.vidking.firetv.R
-import com.vidking.firetv.db.AppDatabase
-import com.vidking.firetv.db.WatchProgress
 import com.vidking.firetv.febbox.SubtitleTrack
-import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
 /**
  * Native Media3 ExoPlayer playback. Receives a fully-resolved stream URL from
- * [PlaybackLauncherActivity] and plays it through a SurfaceView, which
- * unlocks Fire TV's hardware decoders for HLS/HEVC.
+ * [SourcePickerActivity] and plays it through a SurfaceView, which unlocks
+ * Fire TV's hardware decoders for HLS/HEVC.
  *
- * Fire TV concerns this addresses:
- *   - WebView's poor HLS support: solved by using ExoPlayer directly.
- *   - Codec/DRM diagnostics: long-press OK reveals an overlay with format /
- *     resolution / last error, so codec failures are debuggable on TV.
- *   - Now Playing card / remote keys: a [MediaSession] mirrors playback state
- *     so Fire TV's media keys and Now Playing surfaces work.
- *   - Origin/Referer-gated CDNs: the resolver's referer + UA are forwarded
- *     to ExoPlayer's HttpDataSource.
+ * Watch-history persistence was removed in 2026-05 per user request — playback
+ * is stateless. Subtitles arrive as sidecar tracks (OpenSubtitles or a future
+ * source) and are wired into the MediaItem at prepare time.
  */
 @androidx.media3.common.util.UnstableApi
 class ExoPlayerActivity : AppCompatActivity() {
 
     private lateinit var rootView: FrameLayout
     private lateinit var playerView: PlayerView
-    private var skipIntroButton: Button? = null
     private var errorOverlay: TextView? = null
     private var debugOverlay: TextView? = null
     private var sourceBadge: TextView? = null
@@ -80,29 +70,14 @@ class ExoPlayerActivity : AppCompatActivity() {
     private var backdropPath: String? = null
     private var season: Int = 0
     private var episode: Int = 0
-    private var resumeSeconds: Long = 0L
 
     private var subtitles: List<SubtitleTrack> = emptyList()
-    private var introStartMs: Long = -1L
-    private var introEndMs: Long = -1L
+    private var subtitlesEnabled: Boolean = true
 
     private var lastErrorMessage: String? = null
     private var debugVisible: Boolean = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var lastSavedAt: Long = 0L
-    private val progressTicker = object : Runnable {
-        override fun run() {
-            saveProgress(force = false)
-            mainHandler.postDelayed(this, 10_000)
-        }
-    }
-    private val introTicker = object : Runnable {
-        override fun run() {
-            updateSkipIntroVisibility()
-            mainHandler.postDelayed(this, 1_000)
-        }
-    }
     private val debugTicker = object : Runnable {
         override fun run() {
             updateDebugOverlay()
@@ -125,11 +100,8 @@ class ExoPlayerActivity : AppCompatActivity() {
         backdropPath = intent.getStringExtra(EXTRA_BACKDROP)
         season = intent.getIntExtra(EXTRA_SEASON, 0)
         episode = intent.getIntExtra(EXTRA_EPISODE, 0)
-        resumeSeconds = intent.getLongExtra(EXTRA_RESUME, 0L)
-        introStartMs = intent.getLongExtra(EXTRA_INTRO_START_MS, -1L)
-        introEndMs = intent.getLongExtra(EXTRA_INTRO_END_MS, -1L)
 
-        @Suppress("DEPRECATION", "UNCHECKED_CAST")
+        @Suppress("DEPRECATION")
         subtitles = (intent.getParcelableArrayListExtra<SubtitleTrack>(EXTRA_SUBTITLES)
             ?: arrayListOf()).toList()
 
@@ -138,7 +110,6 @@ class ExoPlayerActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                saveProgress(force = true)
                 finish()
             }
         })
@@ -162,44 +133,12 @@ class ExoPlayerActivity : AppCompatActivity() {
             controllerShowTimeoutMs = 4000
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
             setKeepContentOnPlayerReset(true)
-            // Make sure D-pad / arrow keys land on the player so the built-in
-            // controller actually receives them. Without this, key events on
-            // some Fire TV firmwares (and the emulator) fall through to
-            // nothing because focus stays on the activity's root frame.
             isFocusable = true
             isFocusableInTouchMode = true
             descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
         rootView.addView(playerView)
 
-        skipIntroButton = Button(this).apply {
-            text = getString(R.string.player_skip_intro)
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            background = GradientDrawable().apply {
-                cornerRadius = dp(6f).toFloat()
-                setColor(0xCCE50914.toInt())
-            }
-            setPadding(dp(20), dp(10), dp(20), dp(10))
-            visibility = View.GONE
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setOnClickListener {
-                if (introEndMs > 0) player?.seekTo(introEndMs)
-                visibility = View.GONE
-            }
-            val lp = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            )
-            lp.gravity = Gravity.BOTTOM or Gravity.END
-            lp.bottomMargin = dp(40)
-            lp.rightMargin = dp(40)
-            layoutParams = lp
-        }
-        rootView.addView(skipIntroButton)
-
-        // Source badge — top-left while controls are visible.
         sourceBadge = TextView(this).apply {
             text = if (sourceLabel.isNotEmpty()) "▶ $sourceLabel" else ""
             setTextColor(0xFFE6E6E6.toInt())
@@ -221,9 +160,6 @@ class ExoPlayerActivity : AppCompatActivity() {
         }
         rootView.addView(sourceBadge)
 
-        // Error overlay — initially hidden; shown when ExoPlayer reports an
-        // error so the user (and any debugger watching the TV screen) can see
-        // why playback failed without needing logcat.
         errorOverlay = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
@@ -242,7 +178,6 @@ class ExoPlayerActivity : AppCompatActivity() {
         }
         rootView.addView(errorOverlay)
 
-        // Diagnostic overlay — long-press OK to toggle.
         debugOverlay = TextView(this).apply {
             setTextColor(0xFFE6E6E6.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
@@ -268,10 +203,6 @@ class ExoPlayerActivity : AppCompatActivity() {
     }
 
     private fun initPlayer() {
-        // OkHttp-backed data source. The provider CDNs gate the m3u8 + segment
-        // fetches behind Referer/Origin/User-Agent, and OkHttp gives us
-        // explicit control over redirects and per-request retry, which is
-        // why we prefer it over DefaultHttpDataSource here.
         val okHttp = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -290,27 +221,21 @@ class ExoPlayerActivity : AppCompatActivity() {
         }
         if (headers.isNotEmpty()) httpFactory.setDefaultRequestProperties(headers)
 
-        // Bound retries explicitly. The default policy retries forever on some
-        // 5xx classes which presents to the user as a "stuck loading" loop.
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(httpFactory)
             .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(3))
 
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
-            // Default selection params: prefer HD up to 1080p, fall back
-            // gracefully when the Fire TV Stick decoder caps out at 720p.
             .setTrackSelector(
                 androidx.media3.exoplayer.trackselection.DefaultTrackSelector(this).apply {
                     parameters = parameters.buildUpon()
-                        .setMaxVideoSizeSd()  // safe default; raised below
+                        .setMaxVideoSizeSd()
                         .build()
                 }
             )
             .build()
 
-        // Raise selection cap to 1080p — many Fire TV devices advertise SD
-        // and we want to hand the device the best stream it can decode.
         exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
             .setMaxVideoSize(1920, 1080)
             .build()
@@ -319,9 +244,6 @@ class ExoPlayerActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY && errorOverlay?.visibility == View.VISIBLE) {
                     errorOverlay?.visibility = View.GONE
-                }
-                if (state == Player.STATE_ENDED) {
-                    saveProgress(force = true, ended = true)
                 }
             }
 
@@ -352,10 +274,6 @@ class ExoPlayerActivity : AppCompatActivity() {
                 )
             }
 
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (!isPlaying) saveProgress(force = true)
-            }
-
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 Log.d(TAG, "video size: ${videoSize.width}x${videoSize.height}")
             }
@@ -381,8 +299,6 @@ class ExoPlayerActivity : AppCompatActivity() {
             }
         }
 
-        // Hint MIME type from URL extension so DefaultMediaSourceFactory picks
-        // the right source factory (HLS, DASH, or progressive).
         val mimeTypeHint = guessMimeType(streamUrl)
 
         val mediaItem = MediaItem.Builder()
@@ -402,23 +318,56 @@ class ExoPlayerActivity : AppCompatActivity() {
             .build()
         exo.setMediaItem(mediaItem)
         exo.prepare()
-        if (resumeSeconds > 0) exo.seekTo(resumeSeconds * 1000L)
         exo.playWhenReady = true
 
         playerView.player = exo
         player = exo
         playerView.requestFocus()
 
-        // MediaSession surfaces playback to Fire TV's Now Playing card and
-        // hardware media keys (Play / Pause on the remote).
+        // Subtitle styling: white text on opaque black box so captions stay
+        // readable over bright scenes. setApplyEmbeddedStyles(false) discards
+        // any cue-level styling that came from the SRT/VTT so our defaults win.
+        playerView.subtitleView?.apply {
+            setApplyEmbeddedStyles(false)
+            setStyle(
+                CaptionStyleCompat(
+                    /* foregroundColor = */ Color.WHITE,
+                    /* backgroundColor = */ 0x80000000.toInt(),
+                    /* windowColor     = */ Color.TRANSPARENT,
+                    /* edgeType        = */ CaptionStyleCompat.EDGE_TYPE_NONE,
+                    /* edgeColor       = */ Color.BLACK,
+                    /* typeface        = */ null
+                )
+            )
+        }
+        applySubtitleEnabled(subtitlesEnabled, announce = false)
+
         mediaSession = MediaSession.Builder(this, exo).build()
+    }
+
+    private fun applySubtitleEnabled(enabled: Boolean, announce: Boolean = true) {
+        subtitlesEnabled = enabled
+        val p = player ?: return
+        // C.TRACK_TYPE_TEXT covers every sidecar SubtitleConfiguration we
+        // attached at MediaItem-build time. Disabling the type hides them
+        // without rebuilding the player.
+        p.trackSelectionParameters = p.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enabled)
+            .build()
+        playerView.subtitleView?.visibility = if (enabled) View.VISIBLE else View.GONE
+        if (announce) {
+            Toast.makeText(
+                this,
+                if (enabled) "Subtitles ON" else "Subtitles OFF",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val p = player
         if (p != null && event.action == KeyEvent.ACTION_DOWN) {
-            // Hardware media keys + emulator's spacebar. Handled directly so
-            // they work whether or not the controller is currently visible.
             when (event.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                 KeyEvent.KEYCODE_SPACE -> {
@@ -438,14 +387,20 @@ class ExoPlayerActivity : AppCompatActivity() {
                     playerView.showController()
                     return true
                 }
+                // Subtitle toggle. CAPTIONS is the standard CC key on TV
+                // remotes; MENU is the Fire TV hamburger button (more reliable
+                // since some Fire TV firmwares don't surface CAPTIONS).
+                KeyEvent.KEYCODE_CAPTIONS,
+                KeyEvent.KEYCODE_MENU -> {
+                    applySubtitleEnabled(!subtitlesEnabled)
+                    return true
+                }
             }
         }
         return super.dispatchKeyEvent(event)
     }
 
     private fun describeHttpCause(error: PlaybackException): String {
-        // Walk the cause chain and pull out the most actionable HTTP fact:
-        // "HTTP 403 on https://cdn.example/seg-12.ts" beats "Source error".
         var t: Throwable? = error
         while (t != null) {
             when (t) {
@@ -460,7 +415,6 @@ class ExoPlayerActivity : AppCompatActivity() {
     }
 
     private fun originOf(referer: String): String {
-        // Cheap origin extractor — strips path. "https://x.y/foo/bar" -> "https://x.y".
         return try {
             val u = Uri.parse(referer)
             val scheme = u.scheme ?: return referer
@@ -485,22 +439,6 @@ class ExoPlayerActivity : AppCompatActivity() {
         errorOverlay?.let {
             it.text = message
             it.visibility = View.VISIBLE
-        }
-    }
-
-    private fun updateSkipIntroVisibility() {
-        val btn = skipIntroButton ?: return
-        val p = player ?: return
-        if (introStartMs < 0 || introEndMs <= introStartMs) {
-            if (btn.visibility != View.GONE) btn.visibility = View.GONE
-            return
-        }
-        val pos = p.currentPosition
-        val show = pos in introStartMs..introEndMs
-        if (show && btn.visibility != View.VISIBLE) {
-            btn.visibility = View.VISIBLE
-        } else if (!show && btn.visibility == View.VISIBLE) {
-            btn.visibility = View.GONE
         }
     }
 
@@ -563,8 +501,6 @@ class ExoPlayerActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Need to mark the key as handled with startTracking() so
-        // onKeyLongPress fires for our toggle gesture.
         if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
                 keyCode == KeyEvent.KEYCODE_ENTER ||
                 keyCode == KeyEvent.KEYCODE_BUTTON_A) &&
@@ -578,20 +514,9 @@ class ExoPlayerActivity : AppCompatActivity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
     private fun dp(value: Float): Int = (value * resources.displayMetrics.density).toInt()
 
-    override fun onStart() {
-        super.onStart()
-        mainHandler.postDelayed(progressTicker, 10_000)
-        if (introStartMs >= 0 && introEndMs > introStartMs) {
-            mainHandler.post(introTicker)
-        }
-    }
-
     override fun onStop() {
         super.onStop()
-        mainHandler.removeCallbacks(progressTicker)
-        mainHandler.removeCallbacks(introTicker)
         mainHandler.removeCallbacks(debugTicker)
-        saveProgress(force = true)
     }
 
     override fun onDestroy() {
@@ -600,38 +525,6 @@ class ExoPlayerActivity : AppCompatActivity() {
         player?.release()
         player = null
         super.onDestroy()
-    }
-
-    private fun saveProgress(force: Boolean, ended: Boolean = false) {
-        val p = player ?: return
-        val durationMs = p.duration.takeIf { it > 0 } ?: return
-        val positionMs = p.currentPosition.coerceAtLeast(0)
-        val now = System.currentTimeMillis()
-        if (!force && (now - lastSavedAt) < 10_000) return
-        lastSavedAt = now
-
-        val durationSec = durationMs / 1000.0
-        val currentSec = if (ended) durationSec else positionMs / 1000.0
-        val pct = if (ended) 1.0 else (currentSec / durationSec).coerceIn(0.0, 1.0)
-
-        val record = WatchProgress(
-            key = WatchProgress.keyFor(tmdbId, mediaType, season, episode),
-            tmdbId = tmdbId,
-            mediaType = mediaType,
-            title = titleArg,
-            posterPath = posterPath,
-            backdropPath = backdropPath,
-            season = season,
-            episode = episode,
-            episodeName = null,
-            currentTime = currentSec,
-            duration = durationSec,
-            progressPct = pct,
-            updatedAt = now
-        )
-        lifecycleScope.launch {
-            AppDatabase.get(this@ExoPlayerActivity).watchProgressDao().upsert(record)
-        }
     }
 
     companion object {
@@ -652,10 +545,7 @@ class ExoPlayerActivity : AppCompatActivity() {
         const val EXTRA_BACKDROP = "backdrop"
         const val EXTRA_SEASON = "season"
         const val EXTRA_EPISODE = "episode"
-        const val EXTRA_RESUME = "resume"
         const val EXTRA_SUBTITLES = "subtitles"
-        const val EXTRA_INTRO_START_MS = "intro_start_ms"
-        const val EXTRA_INTRO_END_MS = "intro_end_ms"
 
         fun intent(
             context: Context,
@@ -669,10 +559,7 @@ class ExoPlayerActivity : AppCompatActivity() {
             backdropPath: String?,
             season: Int,
             episode: Int,
-            resumeSeconds: Long,
             subtitles: List<SubtitleTrack> = emptyList(),
-            introStartMs: Long = -1L,
-            introEndMs: Long = -1L,
             sourceLabel: String = ""
         ): Intent = Intent(context, ExoPlayerActivity::class.java).apply {
             putExtra(EXTRA_STREAM_URL, streamUrl)
@@ -686,10 +573,7 @@ class ExoPlayerActivity : AppCompatActivity() {
             putExtra(EXTRA_BACKDROP, backdropPath)
             putExtra(EXTRA_SEASON, season)
             putExtra(EXTRA_EPISODE, episode)
-            putExtra(EXTRA_RESUME, resumeSeconds)
             putParcelableArrayListExtra(EXTRA_SUBTITLES, ArrayList(subtitles))
-            putExtra(EXTRA_INTRO_START_MS, introStartMs)
-            putExtra(EXTRA_INTRO_END_MS, introEndMs)
         }
     }
 }

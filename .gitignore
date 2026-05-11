@@ -14,3 +14,13 @@ local.properties
 /app/release/
 /app/debug/
 .claude/
+
+# Ad-hoc debug captures from manual testing
+/screen*.png
+/home.png
+/det.png
+/search*.png
+/sr*.png
+/logcat.txt
+/emulator_state*.png
+.tmp_*.xml

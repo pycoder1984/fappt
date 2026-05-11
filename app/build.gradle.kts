@@ -15,6 +15,7 @@ android {
         versionCode = 1
         versionName = "1.0"
         buildConfigField("String", "TMDB_API_KEY", "\"a2fb4f4ce28576beb1dfb5de1ca071e4\"")
+        buildConfigField("String", "OPENSUBTITLES_API_KEY", "\"KNJ9bsLI8YE1j24qshjY5PnuVp9Ozr18\"")
     }
 
     buildFeatures {
@@ -76,9 +77,4 @@ dependencies {
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-ui-leanback:1.4.1")
-
-    // Room
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
 }

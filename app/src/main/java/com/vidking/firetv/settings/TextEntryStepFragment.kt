@@ -61,7 +61,6 @@ class TextEntryStepFragment : GuidedStepSupportFragment() {
                 when (field) {
                     FIELD_BASE_URL -> AppPrefs.setFebboxBaseUrl(ctx, value)
                     FIELD_TOKEN -> AppPrefs.setFebboxToken(ctx, value)
-                    FIELD_LIVETV_URL -> AppPrefs.setLivetvPlaylistUrl(ctx, value)
                 }
                 parentFragmentManager.popBackStack()
             }
@@ -81,7 +80,6 @@ class TextEntryStepFragment : GuidedStepSupportFragment() {
 
         const val FIELD_BASE_URL = "base_url"
         const val FIELD_TOKEN = "token"
-        const val FIELD_LIVETV_URL = "livetv_url"
 
         fun create(field: String, title: String, description: String, initialValue: String) =
             TextEntryStepFragment().apply {
