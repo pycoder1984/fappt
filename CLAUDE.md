@@ -97,6 +97,14 @@ Subtitle fetch is best-effort — failures (network, no match, quota) return an 
 - OpenSubtitles API key: `buildConfigField OPENSUBTITLES_API_KEY` in `app/build.gradle.kts`
 - Febbox base URL and token: user-entered via Settings → stored in `AppPrefs`
 
+### Debug keystore is committed
+
+`app/debug.keystore` is **intentionally committed** and wired into `signingConfigs.debug` in `app/build.gradle.kts` (storepass / keypass `android`, alias `androiddebugkey`). Reason: before pinning, every machine's auto-generated `~/.android/debug.keystore` had a different signing cert, so `adb install -r` between machines (or after CI builds) triggered `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, forcing an uninstall that wiped `SharedPreferences` (and therefore the Febbox endpoint/token). Don't replace or delete it without a migration plan for installed users — they'll lose their settings on the next update.
+
+### Logging caveats
+
+`FebboxRepository` uses `HttpLoggingInterceptor.Level.BASIC` (URL + status + duration). **Do not raise to `BODY`** — the request body includes the `Cookie: rnrvibe_siteadmin=<token>` header and the response body includes signed HLS URLs. Both end up in logcat where any `adb logcat` user can read them.
+
 ### Fire TV–Specific Constraints
 
 - Leanback UI is required (D-Pad navigation, not touch)
