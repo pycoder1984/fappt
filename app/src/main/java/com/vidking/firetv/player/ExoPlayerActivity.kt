@@ -481,13 +481,12 @@ class ExoPlayerActivity : AppCompatActivity() {
                     return true
                 }
                 // Subtitle toggle. CAPTIONS is standard; MENU is Fire TV.
-                // Added SETTINGS, INFO, GUIDE, STB_MENU, plus S/C for keyboard.
+                // Added SETTINGS, INFO, GUIDE, plus S/C for keyboard.
                 KeyEvent.KEYCODE_CAPTIONS,
                 KeyEvent.KEYCODE_MENU,
                 KeyEvent.KEYCODE_SETTINGS,
                 KeyEvent.KEYCODE_INFO,
                 KeyEvent.KEYCODE_GUIDE,
-                KeyEvent.KEYCODE_STB_MENU,
                 KeyEvent.KEYCODE_TV_CONTENTS_MENU,
                 KeyEvent.KEYCODE_S,
                 KeyEvent.KEYCODE_C -> {
