@@ -35,6 +35,7 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import com.vidking.firetv.febbox.SubtitleTrack
+import com.vidking.firetv.data.AppPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import androidx.lifecycle.lifecycleScope
@@ -59,6 +60,8 @@ class ExoPlayerActivity : AppCompatActivity() {
     private var debugOverlay: TextView? = null
     private var player: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
+
+    private var subtitleToggleButton: TextView? = null
 
     private var streamUrl: String = ""
     private var refererArg: String = ""
@@ -120,6 +123,8 @@ class ExoPlayerActivity : AppCompatActivity() {
         subtitles = (intent.getParcelableArrayListExtra<SubtitleTrack>(EXTRA_SUBTITLES)
             ?: arrayListOf()).toList()
 
+        subtitlesEnabled = AppPrefs.subtitlesEnabled(this)
+
         buildUi()
         initPlayer()
 
@@ -153,6 +158,40 @@ class ExoPlayerActivity : AppCompatActivity() {
             descendantFocusability = android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
         rootView.addView(playerView)
+
+        // On-screen subtitle toggle for touch devices / Google TV without Menu button.
+        // Anchored top-right, visible only when player controller is visible.
+        subtitleToggleButton = TextView(this).apply {
+            text = "CC"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(4f).toFloat()
+                setColor(0x80000000.toInt())
+                setStroke(dp(1), Color.WHITE)
+            }
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            val lp = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+            lp.gravity = Gravity.TOP or Gravity.END
+            lp.topMargin = dp(20)
+            lp.rightMargin = dp(20)
+            layoutParams = lp
+            setOnClickListener {
+                applySubtitleEnabled(!subtitlesEnabled)
+            }
+        }
+        rootView.addView(subtitleToggleButton)
+
+        playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+            subtitleToggleButton?.visibility = visibility
+        })
 
         errorOverlay = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt())
@@ -399,6 +438,7 @@ class ExoPlayerActivity : AppCompatActivity() {
 
     private fun applySubtitleEnabled(enabled: Boolean, announce: Boolean = true) {
         subtitlesEnabled = enabled
+        AppPrefs.setSubtitlesEnabled(this, enabled)
         val p = player ?: return
         // C.TRACK_TYPE_TEXT covers every sidecar SubtitleConfiguration we
         // attached at MediaItem-build time. Disabling the type hides them
@@ -440,11 +480,17 @@ class ExoPlayerActivity : AppCompatActivity() {
                     playerView.showController()
                     return true
                 }
-                // Subtitle toggle. CAPTIONS is the standard CC key on TV
-                // remotes; MENU is the Fire TV hamburger button (more reliable
-                // since some Fire TV firmwares don't surface CAPTIONS).
+                // Subtitle toggle. CAPTIONS is standard; MENU is Fire TV.
+                // Added SETTINGS, INFO, GUIDE, STB_MENU, plus S/C for keyboard.
                 KeyEvent.KEYCODE_CAPTIONS,
-                KeyEvent.KEYCODE_MENU -> {
+                KeyEvent.KEYCODE_MENU,
+                KeyEvent.KEYCODE_SETTINGS,
+                KeyEvent.KEYCODE_INFO,
+                KeyEvent.KEYCODE_GUIDE,
+                KeyEvent.KEYCODE_STB_MENU,
+                KeyEvent.KEYCODE_TV_CONTENTS_MENU,
+                KeyEvent.KEYCODE_S,
+                KeyEvent.KEYCODE_C -> {
                     applySubtitleEnabled(!subtitlesEnabled)
                     return true
                 }

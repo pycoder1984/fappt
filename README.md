@@ -15,10 +15,11 @@ Latest APK is built automatically by GitHub Actions on every push to `main`:
 - Details screen with parallel-loaded season / episode picker for TV shows
 - **Explicit source picker.** When you hit Play you choose which provider to resolve through — Febbox first if configured, then MoviesAPI / VidLink / Aether (all WebView-sniffer-based)
 - **Quality picker** for Febbox streams (4K / 1080p / 720p / 360p / AUTO)
-- **Native Media3 ExoPlayer playback** — HLS / DASH / MP4 with Fire TV's hardware decoders via SurfaceView
+- **Native Media3 ExoPlayer playback** — HLS / DASH / MP4 with Fire TV and Android hardware decoders
+- **Google TV & Phone compatible** — works on Fire TV, Google TV (Hisense, Sony, etc.), and Android mobile phones (touch-friendly controls)
 - **MediaSession** integration — Now Playing card and remote media keys work
 - **Subtitles from OpenSubtitles** — auto-fetched in parallel with the source resolve, white text on 50%-opaque black background
-- **Subtitle on/off toggle** — press the **Menu (≡)** button (or `CAPTIONS` key) on the remote during playback
+- **Subtitle on/off toggle** — press the **Menu (≡)** button, **Settings**, or use the on-screen **CC** button during playback
 - Long-press OK on the remote during playback → diagnostic overlay (codec, bitrate, resolution, last error)
 
 ## Why native ExoPlayer (not WebView)
@@ -73,9 +74,9 @@ OpenSubtitles **anonymous mode** is limited to **5 downloads / IP / 24 h**. To r
 
 ## Subtitle controls (during playback)
 
-| Action | Key |
+| Action | Key / Control |
 |---|---|
-| Toggle subtitles on / off | **Menu (≡)** button on Fire TV remote, or `CAPTIONS` |
+| Toggle subtitles on / off | **Menu (≡)**, **Settings**, **CC** button, or **C** / **S** on keyboard |
 | Diagnostic overlay | Long-press OK / DPAD_CENTER |
 | Seek ±10 s | RW / FF (or DPAD_LEFT / DPAD_RIGHT) |
 | Play / pause | Play/Pause button, or SPACE on emulator |

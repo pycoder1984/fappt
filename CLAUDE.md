@@ -88,7 +88,7 @@ Subtitle fetch is best-effort — failures (network, no match, quota) return an 
 - Hardware SurfaceView playback via Media3 1.4.1
 - MediaSession for Fire TV Now Playing card and hardware media keys
 - Stateless: no watch history, no resume seek
-- Subtitle controls: **Menu (≡)** key on Fire TV remote (also `CAPTIONS`) toggles all text tracks via `setTrackTypeDisabled(C.TRACK_TYPE_TEXT, ...)`. Style: white text on 50%-opaque black background, `setApplyEmbeddedStyles(false)` so source-defined styling can't override
+- Subtitle controls: Toggled via **Menu (≡)**, **Settings**, or the on-screen **CC** button (for touch/Google TV). Key mappings include `KEYCODE_CAPTIONS`, `KEYCODE_MENU`, `KEYCODE_SETTINGS`, `KEYCODE_S`, and `KEYCODE_C`. Style: white text on 50%-opaque black background, `setApplyEmbeddedStyles(false)` so source-defined styling can't override. Subtitle state is persisted in `AppPrefs`.
 - Long-press OK on remote → debug overlay (codec, bitrate, last error)
 
 ### Configuration

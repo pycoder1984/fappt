@@ -23,6 +23,7 @@ object AppPrefs {
 
     private const val KEY_FEBBOX_BASE_URL = "febbox_base_url"
     private const val KEY_FEBBOX_TOKEN = "febbox_token"
+    private const val KEY_SUBTITLES_ENABLED = "subtitles_enabled"
     private const val KEY_LAST_CRASH = "last_crash"
     private const val KEY_LAST_CRASH_AT = "last_crash_at"
 
@@ -48,6 +49,13 @@ object AppPrefs {
 
     fun setFebboxToken(context: Context, value: String) {
         prefs(context).edit().putString(KEY_FEBBOX_TOKEN, value.trim()).apply()
+    }
+
+    fun subtitlesEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SUBTITLES_ENABLED, true)
+
+    fun setSubtitlesEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SUBTITLES_ENABLED, enabled).apply()
     }
 
     /** True when the effective config is non-empty — almost always true now that defaults exist. */
